@@ -52,7 +52,7 @@ type Scene =
 const imagePaths = {
   snow: '/scenes/snow.webp',
   umbrella: '/scenes/umbrella.webp',
-  envelope: '/scenes/letter.png',
+  envelope: '/scenes/letter.webp',
   box: '/scenes/box.webp',
   home: '/scenes/home.webp'
 };
