@@ -60,12 +60,41 @@ const imagePaths = {
 const giftImage = (n: number) =>
   `/gifts/day${String(n).padStart(2, '0')}.webp`;
 
+// 聖誕倒數日曆設定
+const CHRISTMAS_YEAR = 2026;
+
+// 測試模式：正式上線請保持 false
+const TEST_MODE = false;
+const TEST_DAY = 1;
+
+// 計算目前台灣時間已解鎖的天數
+function getUnlockedDay() {
+  if (TEST_MODE) {
+    return Math.max(0, Math.min(TEST_DAY, 24));
+  }
+
+  const now = Date.now();
+
+  const start = new Date(
+    `${CHRISTMAS_YEAR}-12-01T00:00:00+08:00`
+  ).getTime();
+
+  const elapsed = Math.floor(
+    (now - start) / 86400000
+  ) + 1;
+
+  return Math.max(0, Math.min(elapsed, 24));
+}
+
 export default function Page() {
   const [scene, setScene] = useState<Scene>('snow');
   const [day, setDay] = useState<number | null>(null);
   const [opened, setOpened] = useState<number[]>([]);
+  const [unlockedDay, setUnlockedDay] = useState(0);
+  const [lockedDay, setLockedDay] = useState<number | null>(null);
+  const [ready, setReady] = useState(false);
 
-  // 讀取已拆開的禮物紀錄
+  // 讀取已拆開的禮物及故事進度
   useEffect(() => {
     try {
       const v = JSON.parse(
@@ -74,12 +103,46 @@ export default function Page() {
 
       if (Array.isArray(v)) {
         setOpened(
-          v.filter(
-            n => Number.isInteger(n) && n >= 1 && n <= 24
-          )
+          [...new Set<number>(
+            v.filter(
+              n => Number.isInteger(n) && n >= 1 && n <= 24
+            )
+          )]
         );
       }
+
+      if (
+        localStorage.getItem('xmas-story-completed') === 'true'
+      ) {
+        setScene('home');
+      }
     } catch {}
+
+    setUnlockedDay(getUnlockedDay());
+    setReady(true);
+  }, []);
+
+  // 每秒檢查日期，跨過凌晨自動解鎖
+  useEffect(() => {
+    const updateDate = () => {
+      setUnlockedDay(getUnlockedDay());
+    };
+
+    updateDate();
+
+    const timer = window.setInterval(updateDate, 1000);
+
+    window.addEventListener('focus', updateDate);
+    document.addEventListener('visibilitychange', updateDate);
+
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', updateDate);
+      document.removeEventListener(
+        'visibilitychange',
+        updateDate
+      );
+    };
   }, []);
 
   // 切換場景時回到頁面頂端
@@ -87,22 +150,63 @@ export default function Page() {
     window.scrollTo(0, 0);
   }, [scene]);
 
-  // Escape 關閉禮物小卡
+  // 提前載入下一幕圖片
   useEffect(() => {
-    if (day === null) return;
+    const nextImages: Partial<Record<Scene, string>> = {
+      snow: imagePaths.umbrella,
+      umbrella: imagePaths.envelope,
+      envelope: imagePaths.box,
+      letter: imagePaths.box,
+      box: imagePaths.home
+    };
+
+    const next = nextImages[scene];
+
+    if (next) {
+      const img = new Image();
+      img.src = next;
+    }
+  }, [scene]);
+
+  // 提前載入當天的禮物圖片
+  useEffect(() => {
+    if (scene === 'home' && unlockedDay > 0) {
+      const img = new Image();
+      img.src = giftImage(unlockedDay);
+    }
+  }, [scene, unlockedDay]);
+
+  // Escape 關閉小卡片或上鎖提示
+  useEffect(() => {
+    if (day === null && lockedDay === null) return;
 
     const fn = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setDay(null);
+      if (e.key === 'Escape') {
+        setDay(null);
+        setLockedDay(null);
+      }
     };
 
     window.addEventListener('keydown', fn);
 
     return () =>
       window.removeEventListener('keydown', fn);
-  }, [day]);
+  }, [day, lockedDay]);
 
   // 打開每日禮物
   function openGift(n: number) {
+    const currentUnlockedDay = getUnlockedDay();
+
+    setUnlockedDay(currentUnlockedDay);
+
+    // 日期還沒到，不可以偷拆
+    if (n > currentUnlockedDay) {
+      setDay(null);
+      setLockedDay(n);
+      return;
+    }
+
+    setLockedDay(null);
     setDay(n);
 
     const next = [...new Set([...opened, n])];
@@ -116,21 +220,46 @@ export default function Page() {
     } catch {}
   }
 
-  // 單擊打開禮物盒
+  // 單擊打開禮物盒並記住故事進度
   function tapBox() {
     setScene('home');
+
+    try {
+      localStorage.setItem(
+        'xmas-story-completed',
+        'true'
+      );
+    } catch {}
   }
 
   // 重看故事
   function restartStory() {
     setScene('snow');
     setDay(null);
+    setLockedDay(null);
   }
 
   const card =
     day === null
       ? null
       : gifts.find(g => g.day === day);
+
+  // 不計算測試期間提前拆開的未解鎖禮物
+  const openedCount = opened.filter(
+    n => n <= unlockedDay
+  ).length;
+
+  if (!ready) {
+    return (
+      <main className={styles.shell}>
+        <article className={styles.book}>
+          <section className={styles.caption}>
+            <p>Preparing your little happiness...</p>
+          </section>
+        </article>
+      </main>
+    );
+  }
 
   return (
     <main className={styles.shell}>
@@ -295,36 +424,55 @@ export default function Page() {
             <section className={styles.calendar}>
 
               <p>
-                已拆開 {opened.length} / 24 份禮物
+                已拆開 {openedCount} / 24 份禮物
               </p>
 
               <div className={styles.grid}>
                 {Array.from(
                   { length: 24 },
                   (_, i) => i + 1
-                ).map(n => (
-                  <button
-                    key={n}
-                    className={`${styles.gift} ${
-                      opened.includes(n)
-                        ? styles.opened
-                        : ''
-                    }`}
-                    onClick={() => openGift(n)}
-                    aria-label={`12月${n}日禮物`}
-                  >
-                    <span>🎁</span>
+                ).map(n => {
+                  const isLocked = n > unlockedDay;
+                  const isOpened =
+                    !isLocked && opened.includes(n);
 
-                    <b>
-                      {String(n).padStart(2, '0')}
-                    </b>
+                  return (
+                    <button
+                      key={n}
+                      className={[
+                        styles.gift,
+                        isLocked ? styles.locked : '',
+                        isOpened ? styles.opened : ''
+                      ].join(' ')}
+                      onClick={() => openGift(n)}
+                      aria-label={
+                        `12月${n}日禮物` +
+                        (isLocked ? '，尚未解鎖' : '')
+                      }
+                    >
+                      <span>
+                        {isLocked ? '🔒' : '🎁'}
+                      </span>
 
-                    {opened.includes(n) && (
-                      <small>♡</small>
-                    )}
-                  </button>
-                ))}
+                      <b>
+                        {String(n).padStart(2, '0')}
+                      </b>
+
+                      {isOpened && (
+                        <small>♡</small>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
+
+              <p className={styles.calendarNote}>
+                {unlockedDay === 0
+                  ? '12 月 1 日開始每天拆開一點點快樂'
+                  : unlockedDay < 24
+                    ? 'ＨＡＰＰＹ ＣＨＲＩＳＴＭＡＳ！'
+                    : '聖誕快樂小胖子'}
+              </p>
 
             </section>
           </>
@@ -337,7 +485,7 @@ export default function Page() {
       </article>
 
       {/* 每日禮物小卡 */}
-      {day !== null && (
+      {day !== null && day <= unlockedDay && (
         <div
           className={styles.backdrop}
           onClick={() => setDay(null)}
@@ -382,7 +530,59 @@ export default function Page() {
               className={styles.primary}
               onClick={() => setDay(null)}
             >
-              收好今天的快樂 
+              收好今天的快樂
+            </button>
+
+          </section>
+        </div>
+      )}
+
+      {/* 尚未解鎖的禮物提示 */}
+      {lockedDay !== null && (
+        <div
+          className={styles.backdrop}
+          onClick={() => setLockedDay(null)}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-label="禮物尚未解鎖"
+            className={`${styles.modal} ${styles.lockedModal}`}
+            onClick={e => e.stopPropagation()}
+          >
+
+            <button
+              autoFocus
+              className={styles.close}
+              onClick={() => setLockedDay(null)}
+              aria-label="關閉"
+            >
+              ×
+            </button>
+
+            <div className={styles.letterLabel}>
+              NOT YET
+            </div>
+
+            <div className={styles.lockIcon}>
+              🔒
+            </div>
+
+            <h2>是不是想偷拆</h2>
+
+            <p className={styles.words}>
+              這份禮物還沒到時間啦
+              {'\n\n'}
+              12 月 {lockedDay} 日 00:00 才可以打開
+              {'\n\n'}
+              乖哈
+            </p>
+
+            <button
+              className={styles.primary}
+              onClick={() => setLockedDay(null)}
+            >
+              關閉
             </button>
 
           </section>
